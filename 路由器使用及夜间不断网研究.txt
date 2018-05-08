@@ -1,0 +1,80 @@
+由于学校不再使用锐捷客户端认证方式，改用网页认证模式（实际上还是锐捷的方案），之前发的极路由自动认证教程已经失效。学校采用eportal认证，意味着任意路由器都可以使用了（而不只是内置锐捷认证的极路由）。 自动认证所需条件：采用openwrt系统的路由器，或者其他任意智能路由系统（梅林、DDWRT等）。本教程所使用的仍然是极路由1s。
+预备知识：
+为什么要进行网页认证？
+为了管控上网行为（上网监控、上网计费、定时断网等）。
+自动认证的原理？
+所谓网页认证，不过是你按下登录按钮时浏览器post（提交）或者get（获取）了一串字符串而已，字符串里包括了账号密码等信息，大可使用一些工具（curl、wget等）伪装成浏览器完成认证工作。
+curl怎么使用？
+在该案例中，用法如下：
+curl -d '需要post的数据' “接收post数据的目标地址”
+怎样获取post的数据？
+有许多软件可以用来截取post数据，如谷歌浏览器、抓包软件（如wireshark、sinffer等）。本教程使用的是webscarab.jar+firefox浏览器的方法（《web安全测试》推荐的）。
+步骤：
+1、打开认证网页（已认证的话打开网址 http://192.168.200.84 进行下线操作），点击登录按钮，使用抓包软件获取post数据。（略）
+2、ssh登录路由器（推荐使用putty软件），账号为root，密码为路由器后台密码。在/root目录下建立脚本renzhen.sh，并用vi编辑
+vi /root/renzhen.sh
+renzhen.sh文件内容如下：
+#eportal认证：
+curl -d 'is_auto_land=false&usernameHidden=学号&username_tip=Username&username=学号&strTypeAu=&uuidQrCode=&authorMode=&pwd_tip=Password&pwd=密码&net_access_type=dianxin' '地址（用抓包软件获取）'
+sleep 2s
+#天翼认证
+curl -d 'wlanuserip=你的IP地址&wlanacname=pyzyxy&chal_id=&chal_vector=&auth_type=PAP&seq_id=&req_id=&wlanacIp=121.33.224.66&ssid=&vlan=&mac=&message=&bank_acct=&isCookies=&version=0&authkey=pyzyxy&url=&usertime=0&listpasscode=0&listgetpass=0&getpasstype=0&randstr=&domain=PYZYXY.GZ&isRadiusProxy=false&usertype=0&isHaveNotice=0×=12&weizhi=0&smsid=0&freeuser=&freepasswd=&listwxauth=0&templatetype=1&tname=5&logintype=0&act=&is189=true&terminalType=&useridtemp=学号&userid=学号@PYZYXY.GZ&passwd=密码' http://219.136.125.139/portalAuthAction.do
+对文件增加可执行权限 chmod +x /root/renzhen.sh
+添加到crontab中： crontab -e
+在末行输入 5 6 * * * sh /root/renzhen.sh 作用是每天6点5分执行该脚本
+也可以设置开机自动执行该脚本，需要在/etc/init.d目录下建立一个脚本
+vi /etc/init.d/renzhen
+内容如下
+#!/bin/ash /etc/rc.common
+START=99
+start(){
+cd /root
+./renzhen.sh
+}
+stop(){
+echo 'Do nothing!' > /dev/null }
+下次开机时rc.common将会读取该脚本并自动在/etc/rc.d目录下建立该脚本的符号链接，并加上S（表示start）或K（表示stop）前缀，以上脚本将建立符号链接S99renzhen。
+破解限制思路很简单，只需要在路由器上搭建一个透明代理环境，所有80端口请求转发到代理端口上，代理端口则直接连接以太网口。透明代理，实际上大名鼎鼎的去广告插件adbyby就可以实现这个功能。首先用ssh连接路由器，执行以下命令：
+wget ttp://update.adbyby.com/download/7620n.tar.gz
+tar -xzvf 7620n.tar.gz
+cd bin
+chmod 777 adbyby
+./adbyby&
+最后设置路由器透明代理
+iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 8118
+由于这么做在重启后会失效，需要把该命令写入配置文件
+echo 'iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 8118' >> /etc/firewwall.user
+下一步需要将adbyby设置为开机启动，否则重启后无法打开网页，因为被重定向到了一个不提供服务的端口。
+vi /etc/rc.local
+在exit 0之前加上adbyby的脚本路径。
+如 ./root/bin/adbyby
+**********************华丽的分割线*************************
+很惭愧，原以为使用adbyby代理80端口流量可以解决限制网络共享，没想到还是太年轻了，使用之后仍然频繁禁网。只好写了个检测网络状态的脚本，如果网络不通自动执行认证脚本，认证后的状态为禁网中的话（即仍然无法连接网络），换个账号继续认证（自己找没人使用的账号...）。
+#! /bin/sh
+while(1>0)
+do
+if /bin/ping -c 2 114.114.114.114 >/dev/null
+then
+echo 网络正常！
+else
+echo 网络连接错误！
+#logoff为注销登录状态脚本
+echo logoff...
+sh logoff.sh
+echo 重连第一次...
+sleep 2s
+sh renzhen.sh
+if /bin/ping -c 2 114.114.115.115 >/dev/NULL
+then
+echo 重连成功!
+else
+echo 网络仍然错误！
+sh logoff.sh
+sh renzhen2.sh
+fi
+echo 网络正常！
+echo 重连成功！
+fi
+sleep 5s
+done
+加到开机启动项中或者加入到crontab中。
